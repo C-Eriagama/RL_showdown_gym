@@ -1,6 +1,7 @@
 import os
 import time
 from typing import Any, Dict
+from poke_env.battle.pokemon_type import PokemonType
 
 import numpy as np
 from poke_env import (
@@ -95,6 +96,12 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         prior_battle = self._get_prior_battle(battle)
 
+        # If win/lose, give a big reward/penalty
+        if battle.won:
+            return 10.0
+        elif battle.lost:
+            return -5.0
+
         reward = 0.0
 
         health_team = [mon.current_hp_fraction for mon in battle.team.values()]
@@ -106,19 +113,20 @@ class ShowdownEnvironment(BaseShowdownEnv):
         if len(health_opponent) < len(health_team):
             health_opponent.extend([1.0] * (len(health_team) - len(health_opponent)))
 
-        prior_health_opponent = []
-        if prior_battle is not None:
-            prior_health_opponent = [
-                mon.current_hp_fraction for mon in prior_battle.opponent_team.values()
-            ]
+        # prior_health_opponent = []
+        # if prior_battle is not None:
+        #     prior_health_opponent = [
+        #         mon.current_hp_fraction for mon in prior_battle.opponent_team.values()
+        #     ]
 
-        # Ensure health_opponent has 6 components, filling missing values with 1.0 (fraction of health)
-        if len(prior_health_opponent) < len(health_team):
-            prior_health_opponent.extend(
-                [1.0] * (len(health_team) - len(prior_health_opponent))
-            )
+        # # Ensure health_opponent has 6 components, filling missing values with 1.0 (fraction of health)
+        # if len(prior_health_opponent) < len(health_team):
+        #     prior_health_opponent.extend(
+        #         [1.0] * (len(health_team) - len(prior_health_opponent))
+        #     )
 
-        diff_health_opponent = np.array(prior_health_opponent) - np.array(
+        # Calculate the difference in health for both teams
+        diff_health_opponent = np.array(health_team) - np.array(
             health_opponent
         )
 
@@ -140,7 +148,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # Simply change this number to the number of features you want to include in the observation from embed_battle.
         # If you find a way to automate this, please let me know!
-        return 12
+        return 56
 
     def embed_battle(self, battle: AbstractBattle) -> np.ndarray:
         """
@@ -166,6 +174,45 @@ class ShowdownEnvironment(BaseShowdownEnv):
         if len(health_opponent) < len(health_team):
             health_opponent.extend([1.0] * (len(health_team) - len(health_opponent)))
 
+        # Calculate move effectiveness for available moves
+        move_effectiveness = []
+        for move in battle.available_moves:
+            if move is not None and battle.opponent_active_pokemon is not None:
+                effectiveness = battle.opponent_active_pokemon.damage_multiplier(
+                    move
+                )
+                move_effectiveness.append(effectiveness)
+            else:
+                move_effectiveness.append(1.0)  # Neutral effectiveness if type is unknown
+
+        if len(move_effectiveness) < 4:
+            move_effectiveness.extend([1.0] * (4 - len(move_effectiveness)))
+
+        # one hot encoding of my types
+        my_types = []
+        if battle.active_pokemon is not None:
+            for poke_type in PokemonType:
+                if poke_type in battle.active_pokemon.types:
+                    my_types.append(1.0)
+                else:
+                    my_types.append(0.0)
+        if len(my_types) < 20:
+            my_types.extend([0.0] * (20 - len(my_types)))
+
+        # one hot encoding of opponent types
+        opponent_types = []
+        if battle.opponent_active_pokemon is not None:
+            for poke_type in PokemonType:
+                if poke_type in battle.opponent_active_pokemon.types:
+                    opponent_types.append(1.0)
+                else:
+                    opponent_types.append(0.0)
+        if len(opponent_types) < 20:
+            opponent_types.extend([0.0] * (20 - len(opponent_types)))
+
+
+
+
         #########################################################################################################
         # Caluclate the length of the final_vector and make sure to update the value in _observation_size above #
         #########################################################################################################
@@ -175,6 +222,9 @@ class ShowdownEnvironment(BaseShowdownEnv):
             [
                 health_team,  # N components for the health of each pokemon
                 health_opponent,  # N components for the health of opponent pokemon
+                move_effectiveness,  # 4 components for the effectiveness of each move
+                my_types,  # 20 components for my types
+                opponent_types,  # 20 components for opponent types
             ]
         )
 
