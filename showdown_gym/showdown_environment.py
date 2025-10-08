@@ -16,7 +16,7 @@ from poke_env.environment.singles_env import ObsType
 from poke_env.player.player import Player
 
 from showdown_gym.base_environment import BaseShowdownEnv
-
+import math
 
 class ShowdownEnvironment(BaseShowdownEnv):
 
@@ -26,7 +26,10 @@ class ShowdownEnvironment(BaseShowdownEnv):
         account_name_one: str = "train_one",
         account_name_two: str = "train_two",
         team: str | None = None,
-    ):
+    ):        
+        
+        self.allowable_moves = [0,1,2,3,4,5,6,7,8,9,22,23,24,25] # showdown move IDs (switches, moves, terastallize)
+
         super().__init__(
             battle_format=battle_format,
             account_name_one=account_name_one,
@@ -44,7 +47,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         This should return the number of actions you wish to use if not using the default action scheme.
         """
-        return None  # Return None if action size is default
+        return len(self.allowable_moves)  # Return None if action size is default
 
     def process_action(self, action: np.int64) -> np.int64:
         """
@@ -66,7 +69,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
         :return: The battle order ID for the given action in context of the current battle.
         :rtype: np.Int64
         """
-        return action
+        return np.int64(self.allowable_moves[action])
 
     def get_additional_info(self) -> Dict[str, Dict[str, Any]]:
         info = super().get_additional_info()
@@ -98,9 +101,9 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # If win/lose, give a big reward/penalty
         if battle.won:
-            return 10.0
+            return 25.0
         elif battle.lost:
-            return -5.0
+            return -25.0
 
         reward = 0.0
 
@@ -130,8 +133,10 @@ class ShowdownEnvironment(BaseShowdownEnv):
             health_opponent
         )
 
-        # Reward for reducing the opponent's health
+        # Reward for reducing the opponent's health (between -6 and 6 per turn)
         reward += np.sum(diff_health_opponent)
+
+        reward = reward/len(health_team)  # Normalize by number of Pokémon (between -1 and 1 per turn)
 
         return reward
 
@@ -174,13 +179,15 @@ class ShowdownEnvironment(BaseShowdownEnv):
         if len(health_opponent) < len(health_team):
             health_opponent.extend([1.0] * (len(health_team) - len(health_opponent)))
 
+        # Multiply hp by 10, and round up to nearest integer (bucket health into 11 segments)
+        health_team = [math.ceil(hp * 10) for hp in health_team]
+        health_opponent = [math.ceil(hp * 10) for hp in health_opponent]
+
         # Calculate move effectiveness for available moves
         move_effectiveness = []
         for move in battle.available_moves:
             if move is not None and battle.opponent_active_pokemon is not None:
-                effectiveness = battle.opponent_active_pokemon.damage_multiplier(
-                    move
-                )
+                effectiveness = battle.opponent_active_pokemon.damage_multiplier(move)
                 move_effectiveness.append(effectiveness)
             else:
                 move_effectiveness.append(1.0)  # Neutral effectiveness if type is unknown
@@ -220,8 +227,8 @@ class ShowdownEnvironment(BaseShowdownEnv):
         # Final vector - single array with health of both teams
         final_vector = np.concatenate(
             [
-                health_team,  # N components for the health of each pokemon
-                health_opponent,  # N components for the health of opponent pokemon
+                health_team,  # N components for the health (bucket) of each pokemon
+                health_opponent,  # N components for the health (bucket) of opponent pokemon
                 move_effectiveness,  # 4 components for the effectiveness of each move
                 my_types,  # 20 components for my types
                 opponent_types,  # 20 components for opponent types
