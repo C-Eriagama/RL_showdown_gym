@@ -153,7 +153,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # Simply change this number to the number of features you want to include in the observation from embed_battle.
         # If you find a way to automate this, please let me know!
-        return 56
+        return 183
 
     def embed_battle(self, battle: AbstractBattle) -> np.ndarray:
         """
@@ -169,6 +169,8 @@ class ShowdownEnvironment(BaseShowdownEnv):
         Returns:
             np.float32: A 1D numpy array containing the state you want the agent to observe.
         """
+
+        my_team = list(battle.team.values())
 
         health_team = [mon.current_hp_fraction for mon in battle.team.values()]
         health_opponent = [
@@ -218,6 +220,21 @@ class ShowdownEnvironment(BaseShowdownEnv):
             opponent_types.extend([0.0] * (20 - len(opponent_types)))
 
 
+        # is switch available
+        available_switches = [0.0]*6
+        for mon in my_team:
+            if mon in battle.available_switches:
+                available_switches[my_team.index(mon)] = 1.0
+
+        # switch types
+        switch_types = [0.0]*120
+        for mon in battle.available_switches:
+            for poke_type in PokemonType:
+                if poke_type in mon.types:
+                    switch_types[(my_team.index(mon)*20) + poke_type.value - 1] = 1.0
+
+        #can terastallize
+        can_terastallize = 1.0 if battle.active_pokemon is not None and battle.can_tera else 0.0
 
 
         #########################################################################################################
@@ -232,6 +249,9 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 move_effectiveness,  # 4 components for the effectiveness of each move
                 my_types,  # 20 components for my types
                 opponent_types,  # 20 components for opponent types
+                available_switches, # 6 components for whether each pokemon can be switched to
+                switch_types, # 120 components for the types of each pokemon that can be switched to
+                [can_terastallize], # 1 component for whether the active pokemon can terastallize
             ]
         )
 
