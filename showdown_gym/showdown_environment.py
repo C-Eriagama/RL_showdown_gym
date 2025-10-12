@@ -2,6 +2,7 @@ import os
 import time
 from typing import Any, Dict
 from poke_env.battle.pokemon_type import PokemonType
+from poke_env.battle.move_category import MoveCategory
 
 import numpy as np
 from poke_env import (
@@ -28,7 +29,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
         team: str | None = None,
     ):        
         
-        self.allowable_moves = [0,1,2,3,4,5,6,7,8,9,22,23,24,25] # showdown move IDs (switches, moves, terastallize)
+        self.allowable_moves = [0,1,2,3,4,5,6,7,8,9] # showdown move IDs (switches, moves)
 
         super().__init__(
             battle_format=battle_format,
@@ -101,9 +102,9 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # If win/lose, give a big reward/penalty
         if battle.won:
-            return 25.0
+            return 15.0
         elif battle.lost:
-            return -25.0
+            return -10.0
 
         reward = 0.0
 
@@ -116,27 +117,27 @@ class ShowdownEnvironment(BaseShowdownEnv):
         if len(health_opponent) < len(health_team):
             health_opponent.extend([1.0] * (len(health_team) - len(health_opponent)))
 
-        # prior_health_opponent = []
-        # if prior_battle is not None:
-        #     prior_health_opponent = [
-        #         mon.current_hp_fraction for mon in prior_battle.opponent_team.values()
-        #     ]
+        prior_health_team = [mon.current_hp_fraction for mon in prior_battle.team.values()] if prior_battle is not None else []
+        prior_health_opponent = [mon.current_hp_fraction for mon in prior_battle.opponent_team.values()] if prior_battle is not None else []
+        
+        # Ensure health_opponent has 6 components, filling missing values with 1.0 (fraction of health)
+        if len(prior_health_opponent) < len(health_team):
+            prior_health_opponent.extend(
+                [1.0] * (len(health_team) - len(prior_health_opponent))
+            )
 
-        # # Ensure health_opponent has 6 components, filling missing values with 1.0 (fraction of health)
-        # if len(prior_health_opponent) < len(health_team):
-        #     prior_health_opponent.extend(
-        #         [1.0] * (len(health_team) - len(prior_health_opponent))
-        #     )
+        # Calculate the damage done to both teams since the last turn
+        diff_health_team = np.array(prior_health_team) - np.array(health_team)
+        diff_health_opponent = np.array(prior_health_opponent) - np.array(health_opponent)
 
-        # Calculate the difference in health for both teams
-        diff_health_opponent = np.array(health_team) - np.array(
-            health_opponent
-        )
+        # Reward for reducing the opponent's health (up to +1 per turn)
+        if np.sum(diff_health_opponent) > 0.5:
+            reward += 2.0 * np.sum(diff_health_opponent)  # Bonus for doing a lot of damage in one turn
+        else:
+            reward += np.sum(diff_health_opponent)
 
-        # Reward for reducing the opponent's health (between -6 and 6 per turn)
-        reward += np.sum(diff_health_opponent)
-
-        reward = reward/len(health_team)  # Normalize by number of Pokémon (between -1 and 1 per turn)
+        if np.sum(diff_health_team) < 0.2:
+            reward -= np.sum(diff_health_team)  # Penalty for losing health (up to -1 per turn)
 
         return reward
 
@@ -153,7 +154,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # Simply change this number to the number of features you want to include in the observation from embed_battle.
         # If you find a way to automate this, please let me know!
-        return 183
+        return 199
 
     def embed_battle(self, battle: AbstractBattle) -> np.ndarray:
         """
@@ -187,7 +188,10 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # Calculate move effectiveness for available moves
         move_effectiveness = []
-        for move in battle.available_moves:
+        for move in battle.active_pokemon.moves if battle.active_pokemon else []:
+            if move not in battle.available_moves:
+                move_effectiveness.append(0.0)  # Move not available
+                continue
             if move is not None and battle.opponent_active_pokemon is not None:
                 effectiveness = battle.opponent_active_pokemon.damage_multiplier(move)
                 move_effectiveness.append(effectiveness)
@@ -196,6 +200,23 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         if len(move_effectiveness) < 4:
             move_effectiveness.extend([1.0] * (4 - len(move_effectiveness)))
+
+        # Move categories (Physical, Special, Status) for available moves - one hot encoded
+        move_categories = [0.0]*(4*3)
+        for move in battle.active_pokemon.moves if battle.active_pokemon else []:
+            if move in battle.available_moves:
+                if move.category == MoveCategory.PHYSICAL:
+                    move_categories[battle.active_pokemon.moves.index(move)*3 + 0] = 1.0
+                elif move.category == MoveCategory.SPECIAL:
+                    move_categories[battle.active_pokemon.moves.index(move)*3 + 1] = 1.0
+                elif move.category == MoveCategory.STATUS:
+                    move_categories[battle.active_pokemon.moves.index(move)*3 + 2] = 1.0
+
+        # Active stat boosts
+        relevant_stats = ['atk', 'spa', 'spe', 'def', 'spd']
+        active_stat_boosts = [0.0]*5
+        for stat in relevant_stats:
+            active_stat_boosts[relevant_stats.index(stat)] = battle.active_pokemon.boosts[stat] if battle.active_pokemon is not None else 0.0
 
         # one hot encoding of my types
         my_types = []
@@ -233,8 +254,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 if poke_type in mon.types:
                     switch_types[(my_team.index(mon)*20) + poke_type.value - 1] = 1.0
 
-        #can terastallize
-        can_terastallize = 1.0 if battle.active_pokemon is not None and battle.can_tera else 0.0
+
 
 
         #########################################################################################################
@@ -247,11 +267,12 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 health_team,  # N components for the health (bucket) of each pokemon
                 health_opponent,  # N components for the health (bucket) of opponent pokemon
                 move_effectiveness,  # 4 components for the effectiveness of each move
+                move_categories,  # 12 components for the categories of each move (one hot encoded)
+                active_stat_boosts,  # 5 components for the active stat boosts of the active pokemon
                 my_types,  # 20 components for my types
                 opponent_types,  # 20 components for opponent types
                 available_switches, # 6 components for whether each pokemon can be switched to
                 switch_types, # 120 components for the types of each pokemon that can be switched to
-                [can_terastallize], # 1 component for whether the active pokemon can terastallize
             ]
         )
 
