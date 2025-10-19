@@ -4,6 +4,7 @@ from typing import Any, Dict
 from poke_env.battle.pokemon_type import PokemonType
 from poke_env.battle.move_category import MoveCategory
 from poke_env.battle.status import Status
+from poke_env.battle.observed_pokemon import ObservedPokemon
 
 import numpy as np
 from poke_env import (
@@ -101,9 +102,9 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # If win/lose, give a big reward/penalty
         if battle.won:
-            return 25.0
+            return 5.0
         elif battle.lost:
-            return -10.0
+            return -5.0
 
         prior_battle = self._get_prior_battle(battle)
 
@@ -123,25 +124,12 @@ class ShowdownEnvironment(BaseShowdownEnv):
         # Calculate the damage done to both teams since the last turn
         diff_health_team = np.sum(np.array(prior_health_team) - np.array(health_team))
         diff_health_opponent = np.sum(np.array(prior_health_opponent) - np.array(health_opponent))
-
-
-        # Reward for reducing the opponent's health (up to +1 per turn)
-        if diff_health_opponent > 0.5:
-            reward += 2.0 * diff_health_opponent  # Bonus for doing a lot of damage in one turn
-        elif diff_health_opponent > 0: # do not accidentally penalise for opponent healing
-            reward += diff_health_opponent
-
-
-        # Penalty for losing a lot of health (up to -1 per turn)
-        if diff_health_team > 0.4:
-            reward -= diff_health_team
-
         
         # Reward for knocking out an opponent's Pokémon
         prior_knocked_out_opponents = sum(1 for mon_hp in prior_health_opponent if mon_hp == 0) if prior_battle is not None else 0
         current_knocked_out_opponents = sum(1 for mon_hp in health_opponent if mon_hp == 0)
         if current_knocked_out_opponents > prior_knocked_out_opponents:
-            reward += 3.0
+            reward += 1.0
 
         return reward
 
@@ -158,7 +146,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
 
         # Simply change this number to the number of features you want to include in the observation from embed_battle.
         # If you find a way to automate this, please let me know!
-        return 213
+        return 217
 
     def embed_battle(self, battle: AbstractBattle) -> np.ndarray:
         """
@@ -176,6 +164,17 @@ class ShowdownEnvironment(BaseShowdownEnv):
         """
 
         my_team = list(battle.team.values())
+
+        # Active Pokemon
+        for mon in my_team:
+            if battle.active_pokemon is not None and mon == battle.active_pokemon:
+                active_pokemon = my_team.index(mon) + 1 # 0 = none, 1-6 = pokemon index
+                break
+        # Opponent Active Pokemon
+        for mon in battle.opponent_team.values():
+            if battle.opponent_active_pokemon is not None and mon == battle.opponent_active_pokemon:
+                opponent_active_pokemon = list(battle.opponent_team.values()).index(mon) + 1 # 0 = none, 1-6 = pokemon index
+                break
 
         health_team = [mon.current_hp_fraction for mon in battle.team.values()]
         health_opponent = [
@@ -197,7 +196,11 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 move_effectiveness.append(0.0)  # Move not available
                 continue
             if move is not None and battle.opponent_active_pokemon is not None:
-                effectiveness = battle.opponent_active_pokemon.damage_multiplier(move)
+                effectiveness = 1.0
+                if hasattr(battle.opponent_active_pokemon , "damage_multiplier"):
+                    effectiveness = battle.opponent_active_pokemon.damage_multiplier(move)
+                elif isinstance(battle.opponent_active_pokemon, ObservedPokemon):
+                    effectiveness = battle.opponent_active_pokemon.to_pokemon().get_damage_multiplier(move)
                 move_effectiveness.append(effectiveness)
             else:
                 move_effectiveness.append(1.0)  # Neutral effectiveness if type is unknown
@@ -272,6 +275,9 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 if battle.opponent_active_pokemon.status == status:
                     opponent_status_effect[status.value - 1] = 1.0
 
+        # is side condition present
+        my_side_conditions = 1 if battle.side_conditions else 0
+        opponent_side_conditions = 1 if battle.opponent_side_conditions else 0
 
         #########################################################################################################
         # Caluclate the length of the final_vector and make sure to update the value in _observation_size above #
@@ -280,6 +286,8 @@ class ShowdownEnvironment(BaseShowdownEnv):
         # Final vector - single array with health of both teams
         final_vector = np.concatenate(
             [
+                [active_pokemon], # 1 component for the active pokemon index
+                [opponent_active_pokemon], # 1 component for the opponent active pokemon index
                 health_team,  # N components for the health (bucket) of each pokemon
                 health_opponent,  # N components for the health (bucket) of opponent pokemon
                 move_effectiveness,  # 4 components for the effectiveness of each move
@@ -291,6 +299,8 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 switch_types, # 120 components for the types of each pokemon that can be switched to
                 active_status_effect, # 7 components for the status condition of the active pokemon (one hot encoded)
                 opponent_status_effect, # 7 components for the status condition of the opponent active pokemon (one hot encoded)
+                [my_side_conditions], # 1 component for whether I have side conditions
+                [opponent_side_conditions], # 1 component for whether opponent has side conditions
             ]
         )
 
