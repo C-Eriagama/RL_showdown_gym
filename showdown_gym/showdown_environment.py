@@ -124,6 +124,10 @@ class ShowdownEnvironment(BaseShowdownEnv):
         # Calculate the damage done to both teams since the last turn
         diff_health_team = np.sum(np.array(prior_health_team) - np.array(health_team))
         diff_health_opponent = np.sum(np.array(prior_health_opponent) - np.array(health_opponent))
+
+        # Reward for large damage to opponent
+        if diff_health_opponent > 0.3:
+            reward += diff_health_opponent
         
         # Reward for knocking out an opponent's Pokémon
         prior_knocked_out_opponents = sum(1 for mon_hp in prior_health_opponent if mon_hp == 0) if prior_battle is not None else 0
@@ -206,7 +210,7 @@ class ShowdownEnvironment(BaseShowdownEnv):
                 move_effectiveness.append(1.0)  # Neutral effectiveness if type is unknown
 
         if len(move_effectiveness) < 4:
-            move_effectiveness.extend([1.0] * (4 - len(move_effectiveness)))
+            move_effectiveness.extend([0.0] * (4 - len(move_effectiveness)))
 
         # Move categories (Physical, Special, Status) for available moves - one hot encoded
         move_categories = [0.0]*(4*3)
